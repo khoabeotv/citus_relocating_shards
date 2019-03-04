@@ -3,7 +3,7 @@ defmodule Citus.Worker do
 
   alias Citus.Repo
 
-  @db_name Application.get_env(:citus, :db_name)
+  @db_name System.get_env("POSTGRES_DB")
 
   def start_link(_),
     do: Agent.start_link(fn -> %{total: 0, current: 0, success_shards: [], errors: [], rollback: false, shard_group: nil, relocating: false} end, name: __MODULE__)

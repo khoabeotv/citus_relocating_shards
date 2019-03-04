@@ -35,8 +35,3 @@ config :citus, Citus.Repo,
   database: "adcake_api_dev",
   hostname: "localhost",
   port: 5433
-  # username: System.get_env("POSTGRES_USER"),
-  # password: System.get_env("POSTGRES_PASSWORD"),
-  # database: System.get_env("POSTGRES_DB"),
-  # hostname: System.get_env("POSTGRES_HOST"),
-  # port: System.get_env("POSTGRES_PORT")
