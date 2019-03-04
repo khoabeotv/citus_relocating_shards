@@ -28,3 +28,15 @@ use Mix.Config
 # here (which is why it is important to import them last).
 #
 #     import_config "#{Mix.env()}.exs"
+config :citus, Citus.Repo,
+  adapter: Ecto.Adapters.Postgres,
+  username: "adcake",
+  password: "adcake",
+  database: "adcake_api_dev",
+  hostname: "localhost",
+  port: 5433
+  # username: System.get_env("POSTGRES_USER"),
+  # password: System.get_env("POSTGRES_PASSWORD"),
+  # database: System.get_env("POSTGRES_DB"),
+  # hostname: System.get_env("POSTGRES_HOST"),
+  # port: System.get_env("POSTGRES_PORT")

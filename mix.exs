@@ -4,7 +4,7 @@ defmodule Citus.MixProject do
   def project do
     [
       app: :citus,
-      version: "0.1.1",
+      version: "0.1.0",
       elixir: "~> 1.7",
       start_permanent: Mix.env() == :prod,
       deps: deps()
@@ -20,6 +20,10 @@ defmodule Citus.MixProject do
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
-    []
+    [
+      {:phoenix_ecto, "~> 3.2"},
+      {:postgrex, ">= 0.0.0"},
+      {:remix, "~> 0.0.1", only: :dev}
+    ]
   end
 end
