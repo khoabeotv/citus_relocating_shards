@@ -21,7 +21,7 @@ defmodule Citus.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:ecto_sql, "~> 3.0"},
+      {:ecto, "~> 2.2.10"},
       {:postgrex, ">= 0.0.0"}
     ]
   end
