@@ -2,7 +2,6 @@ defmodule Citus do
   defmacro __using__(_) do
     quote do
       use Agent
-      alias Citus.Repo
 
       @db_name Application.get_env(:citus, :db_name)
       @repo Application.get_env(:citus, :repo)
