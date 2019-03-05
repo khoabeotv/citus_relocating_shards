@@ -294,7 +294,7 @@ defmodule Citus.Worker do
     columns =
       schema
       |> Enum.map(fn [name, type, nullable, default, _] ->
-        column = "#{name} #{type}"
+        column = "\"#{name}\" #{type}"
         column = if nullable == "NO", do: "#{column} NOT NULL", else: column
         if default && !String.contains?(default, "nextval"), do: "#{column} DEFAULT #{default}", else: column
       end)
