@@ -4,6 +4,7 @@ defmodule Citus.Worker do
   alias Citus.Repo
 
   @db_name System.get_env("POSTGRES_DB")
+  @user System.get_env("POSTGRES_USER")
 
   def start_link(_),
     do: Agent.start_link(fn -> %{total: 0, current: 0, success_shards: [], errors: [], rollback: false, shard_group: nil, relocating: false} end, name: __MODULE__)
@@ -253,7 +254,7 @@ defmodule Citus.Worker do
   end
 
   def create_sub(node, source_node, table_name) do
-    create_sub = "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{source_node} port=5432 user=adcake dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
+    create_sub = "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{source_node} port=5432 user=#{@user} dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
     case run_command_on_worker(node, create_sub) do
       {:error, error} ->
         if String.contains?(error, "already exists") do
