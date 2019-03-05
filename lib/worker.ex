@@ -318,15 +318,36 @@ defmodule Citus.Worker do
 
     triggers =
       raw_query("""
-        SELECT trigger_name, event_manipulation, action_condition, action_statement, action_orientation, action_timing
-        FROM information_schema.triggers
-        WHERE event_object_table = '#{source_table_name}'
+        WITH triggers AS (
+          SELECT
+            trigger_name,
+            array_agg(event_manipulation) event_manipulation,
+            array_agg(action_condition) action_condition,
+            array_agg(action_statement) action_statement,
+            array_agg(action_orientation) action_orientation,
+            array_agg(action_timing) action_timing
+          FROM
+            information_schema.triggers
+          WHERE
+            event_object_table = '#{source_table_name}'
+          GROUP BY
+            "trigger_name"
+        )
+        SELECT
+          "trigger_name",
+          event_manipulation,
+          action_condition [1],
+          action_statement [1],
+          action_orientation [1],
+          action_timing [1]
+        FROM
+          triggers
       """)
       |> Map.get(:rows)
       |> Enum.map(fn [trigger_name, event_manipulation, action_condition, action_statement, action_orientation, action_timing] ->
         """
           CREATE TRIGGER #{trigger_name}
-          #{action_timing} #{event_manipulation}
+          #{action_timing} #{Enum.join(event_manipulation, " OR ")}
           ON public.#{table_name}
           FOR EACH #{action_orientation}
           #{if action_condition, do: "WHEN #{action_condition}", else: nil}
