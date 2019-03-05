@@ -79,11 +79,9 @@ defmodule Citus.Worker do
       total = length(List.last(shard_group))
       set_state(%{total: total, current: 0, shard_group: shard_group, success_shards: [], errors: [], rollback: false, relocating: true})
       [source_node, dest_node, logicalrel_group, shard_group] = shard_group
-      Repo.transaction(fn ->
-        move_shard_group(source_node, dest_node, logicalrel_group, shard_group)
-      end)
+      move_shard_group(source_node, dest_node, logicalrel_group, shard_group)
       |> case do
-        {:ok, _} ->
+        :ok ->
           check_wal_status(source_node, dest_node, logicalrel_group, shard_group)
         {:error, error} ->
           state = get_state()
@@ -234,7 +232,7 @@ defmodule Citus.Worker do
     do
       move_shard_group(source_node, dest_node, logicalrel_tail, shard_tail)
     else
-      {:error, error} -> Repo.rollback(error)
+      {:error, error} -> {:error, error}
     end
   end
 
