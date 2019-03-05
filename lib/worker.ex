@@ -321,6 +321,7 @@ defmodule Citus.Worker do
         FROM information_schema.triggers
         WHERE event_object_table = '#{source_table_name}'
       """)
+      |> Map.get(:rows)
       |> Enum.map(fn [trigger_name, event_manipulation, action_condition, action_statement, action_orientation, action_timing] ->
         """
           CREATE TRIGGER #{trigger_name}
