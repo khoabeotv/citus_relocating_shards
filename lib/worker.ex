@@ -202,14 +202,18 @@ defmodule Citus.Worker do
   end
 
   def table_count(node, table_name) do
-    case run_command_on_worker(node, "SELECT reltuples::bigint AS estimate FROM pg_class where relname='#{table_name}'") do
-      {:ok, data} ->
-        count = String.to_integer(data)
-        cond do
-          count < 1000000 -> table_rel_count(node, table_name)
-          true -> count
-        end
+    try do
+      case run_command_on_worker(node, "SELECT reltuples::bigint AS estimate FROM pg_class where relname='#{table_name}'") do
+        {:ok, data} ->
+          count = String.to_integer(data)
+          cond do
+            count < 1000000 -> table_rel_count(node, table_name)
+            true -> count
+          end
 
+        _ -> 0
+      end
+    rescue
       _ -> 0
     end
   end
