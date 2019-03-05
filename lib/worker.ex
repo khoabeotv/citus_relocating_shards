@@ -315,6 +315,25 @@ defmodule Citus.Worker do
 
     command = command ++ indexes
 
+    triggers =
+      raw_query("""
+        SELECT trigger_name, event_manipulation, action_condition, action_statement, action_orientation, action_timing
+        FROM information_schema.triggers
+        WHERE event_object_table = '#{source_table_name}'
+      """)
+      |> Enum.map(fn [trigger_name, event_manipulation, action_condition, action_statement, action_orientation, action_timing] ->
+        """
+          CREATE TRIGGER #{trigger_name}
+          #{action_timing} #{event_manipulation}
+          ON public.#{table_name}
+          FOR EACH #{action_orientation}
+          #{if action_condition, do: "WHEN #{action_condition}", else: nil}
+          #{action_statement};
+        """
+      end)
+
+    command = command ++ triggers
+
     run_command_on_worker(node, command)
   end
 
