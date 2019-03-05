@@ -72,7 +72,7 @@ defmodule Citus.Worker do
 
           --- Pull out our information so we can then move our shard
           SELECT source_node, dest_node, logicalrel_group, shard_group from optimal_move;
-        """, [], [timeout: 50000])
+        """, [], [timeout: 150000])
         |> Map.get(:rows)
         |> List.first
 
