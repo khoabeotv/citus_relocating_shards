@@ -321,11 +321,11 @@ defmodule Citus.Worker do
         WITH triggers AS (
           SELECT
             trigger_name,
-            array_agg(event_manipulation) event_manipulation,
-            array_agg(action_condition) action_condition,
-            array_agg(action_statement) action_statement,
-            array_agg(action_orientation) action_orientation,
-            array_agg(action_timing) action_timing
+            array_agg(event_manipulation::text) event_manipulation,
+            array_agg(action_condition::text) action_condition,
+            array_agg(action_statement::text) action_statement,
+            array_agg(action_orientation::text) action_orientation,
+            array_agg(action_timing::text) action_timing
           FROM
             information_schema.triggers
           WHERE
