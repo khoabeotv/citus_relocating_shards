@@ -151,44 +151,47 @@ defmodule Citus.Worker do
     unless get_state().rollback do
       if Repo.in_transaction?, do: Process.sleep(200), else: Process.sleep(10000)
       table_name = "#{logicalrelid}_#{shardid}"
-      source_count = table_count(source_node, table_name)
-      dest_count = table_count(dest_node, table_name)
 
-      IO.inspect "#{table_name}: #{dest_count}/#{source_count}"
-
-      cond do
-        source_count - dest_count < 100 && wal_is_active?(source_node, table_name) ->
-          update = fn ->
-            Process.sleep(5000)
-            update_metadata(dest_node, shardid)
-          end
-          if Repo.in_transaction?, do: update.(), else: Repo.transaction(fn ->
-            raw_query("LOCK TABLE #{logicalrelid} IN ROW EXCLUSIVE MODE")
-            update.()
-          end)
-          drop_pub(source_node, "pub_#{table_name}")
-          drop_sub(dest_node, "sub_#{table_name}")
-
-          state = get_state()
-          current = state.current + 1
-          success_shards = state.success_shards ++ [table_name]
-          set_state(%{current: current, success_shards: success_shards})
-
-          drop_source_table()
-          IO.inspect("#{current}/#{state.total}", label: "PROGRESS")
-
-        source_count - dest_count < 500 && !Repo.in_transaction? && wal_is_active?(source_node, table_name) ->
-          try do
-            Repo.transaction(fn ->
+      with {:ok, source_count} <- table_count(source_node, table_name),
+           {:ok, dest_count} <- table_count(dest_node, table_name)
+      do
+        IO.inspect "#{table_name}: #{dest_count}/#{source_count}"
+        cond do
+          source_count - dest_count < 100 && wal_is_active?(source_node, table_name) ->
+            update = fn ->
+              Process.sleep(5000)
+              update_metadata(dest_node, shardid)
+            end
+            if Repo.in_transaction?, do: update.(), else: Repo.transaction(fn ->
               raw_query("LOCK TABLE #{logicalrelid} IN ROW EXCLUSIVE MODE")
-               check_wal_status(source_node, dest_node, logicalrelid, shardid)
+              update.()
             end)
-          rescue
-            _ ->
-              check_wal_status(source_node, dest_node, logicalrelid, shardid)
-          end
+            drop_pub(source_node, "pub_#{table_name}")
+            drop_sub(dest_node, "sub_#{table_name}")
 
-        true -> check_wal_status(source_node, dest_node, logicalrelid, shardid)
+            state = get_state()
+            current = state.current + 1
+            success_shards = state.success_shards ++ [table_name]
+            set_state(%{current: current, success_shards: success_shards})
+
+            drop_source_table()
+            IO.inspect("#{current}/#{state.total}", label: "PROGRESS")
+
+          source_count - dest_count < 500 && !Repo.in_transaction? && wal_is_active?(source_node, table_name) ->
+            try do
+              Repo.transaction(fn ->
+                raw_query("LOCK TABLE #{logicalrelid} IN ROW EXCLUSIVE MODE")
+                 check_wal_status(source_node, dest_node, logicalrelid, shardid)
+              end)
+            rescue
+              _ ->
+                check_wal_status(source_node, dest_node, logicalrelid, shardid)
+            end
+
+          true -> check_wal_status(source_node, dest_node, logicalrelid, shardid)
+        end
+      else
+        _ -> check_wal_status(source_node, dest_node, logicalrelid, shardid)
       end
     end
   end
@@ -208,20 +211,20 @@ defmodule Citus.Worker do
           count = String.to_integer(data)
           cond do
             count < 1000000 -> table_rel_count(node, table_name)
-            true -> count
+            true -> {:ok, count}
           end
 
-        _ -> 0
+        _ -> :error
       end
     rescue
-      _ -> 0
+      _ -> :error
     end
   end
 
   def table_rel_count(node, table_name) do
     case run_command_on_worker(node, "SELECT count(1) FROM #{table_name}") do
-      {:ok, data} -> String.to_integer(data)
-      _           -> 0
+      {:ok, data} -> {:ok, String.to_integer(data)}
+      _           -> :error
     end
   end
 
