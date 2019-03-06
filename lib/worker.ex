@@ -12,69 +12,124 @@ defmodule Citus.Worker do
   def set_state(state), do: Agent.update(__MODULE__, &Map.merge(&1, state))
   def get_state, do: Agent.get(__MODULE__, & &1)
 
-  def relocating_shards() do
+  def shard_group_query(source_node, dest_node) when is_nil(source_node) or is_nil(dest_node) do
+    """
+      --- Calculate total size of the cluster, later we could adapt this if the individual was a certain percentage larger than the average would be
+      WITH total AS (
+      SELECT sum(result::bigint) as size, count(nodename) as node_count FROM (
+        SELECT nodename, nodeport, result
+        FROM run_command_on_workers($cmd$SELECT pg_database_size('#{@db_name}');$cmd$)
+      ) a ),
+
+      --- Get the size of each node
+      ind_size AS (
+        SELECT nodename, result::bigint as node_size
+        FROM run_command_on_workers($cmd$SELECT pg_database_size('#{@db_name}')::bigint;$cmd$)
+      ),
+
+      --- Save our most crowded node
+      most_crowded_node AS (
+        SELECT nodename
+        FROM ind_size, total
+        WHERE ind_size.node_size::bigint > ((cast(total.size as bigint) / cast(node_count as bigint))) ORDER BY ind_size.node_size::bigint DESC LIMIT 1
+      ),
+
+      --- Save our least crowded node
+      least_crowded_node AS (
+        SELECT nodename
+        FROM ind_size, total
+        WHERE ind_size.node_size::bigint < ((cast(total.size as bigint) / cast(node_count as bigint))) ORDER BY ind_size.node_size::bigint LIMIT 1
+      ),
+
+      --- Calculate the shard sizes, which includes data related by colocation groups
+      shard_sizes AS(
+        SELECT shardid, result::bigint size FROM
+        (SELECT (run_command_on_shards(logicalrelid::text,$cmd$SELECT pg_total_relation_size('%s')$cmd$)).*
+        FROM pg_dist_partition pp where pp.partmethod='h')a
+      ),
+      colocated_shard_sizes AS(
+        SELECT colocationid, nodename, shard_group, logicalrel_group, group_size
+        FROM
+        (
+          SELECT colocationid, nodename, array_agg(ps.shardid) shard_group, array_agg(pp.logicalrelid::text) logicalrel_group, sum(size) group_size
+          from shard_sizes ss, pg_dist_shard ps, pg_dist_shard_placement psp, pg_dist_partition pp
+          WHERE (ss.shardid=ps.shardid AND pp.logicalrelid=ps.logicalrelid AND psp.shardid=ps.shardid AND pp.partmethod='h')
+          GROUP BY shardmaxvalue, shardminvalue, nodename, colocationid
+        )a
+      ),
+
+      --- Get a shard with appropriate size to balance the cluster
+      optimal_move AS (
+        SELECT src.nodename source_node, src.shard_group, src.logicalrel_group, abs((size/node_count)::bigint-(node_size+group_size)) optimal_size, least_crowded_node.nodename dest_node, group_size
+        FROM (
+          SELECT mc.nodename, group_size, shard_group, logicalrel_group from colocated_shard_sizes cs, most_crowded_node mc WHERE cs.nodename=mc.nodename
+        )src,
+        ind_size, least_crowded_node, total
+        WHERE ind_size.nodename=least_crowded_node.nodename ORDER BY optimal_size LIMIT 1
+      )
+
+      --- Pull out our information so we can then move our shard
+      SELECT source_node, dest_node, logicalrel_group, shard_group from optimal_move;
+    """
+  end
+
+  def shard_group_query(source_node, dest_node) do
+    """
+      --- Calculate total size of the cluster, later we could adapt this if the individual was a certain percentage larger than the average would be
+      WITH total AS (
+      SELECT sum(result::bigint) as size, count(nodename) as node_count FROM (
+        SELECT nodename, nodeport, result
+        FROM run_command_on_workers($cmd$SELECT pg_database_size('#{@db_name}');$cmd$)
+      ) a ),
+
+      --- Get the size of each node
+      ind_size AS (
+        SELECT nodename, result::bigint as node_size
+        FROM run_command_on_workers($cmd$SELECT pg_database_size('#{@db_name}')::bigint;$cmd$)
+      ),
+
+      --- Calculate the shard sizes, which includes data related by colocation groups
+      shard_sizes AS(
+        SELECT shardid, result::bigint size FROM
+        (SELECT (run_command_on_shards(logicalrelid::text,$cmd$SELECT pg_total_relation_size('%s')$cmd$)).*
+        FROM pg_dist_partition pp where pp.partmethod='h')a
+      ),
+      colocated_shard_sizes AS(
+        SELECT colocationid, nodename, shard_group, logicalrel_group, group_size
+        FROM
+        (
+          SELECT colocationid, nodename, array_agg(ps.shardid) shard_group, array_agg(pp.logicalrelid::text) logicalrel_group, sum(size) group_size
+          from shard_sizes ss, pg_dist_shard ps, pg_dist_shard_placement psp, pg_dist_partition pp
+          WHERE (ss.shardid=ps.shardid AND pp.logicalrelid=ps.logicalrelid AND psp.shardid=ps.shardid AND pp.partmethod='h')
+          GROUP BY shardmaxvalue, shardminvalue, nodename, colocationid
+        )a
+      ),
+
+      --- Get a shard with appropriate size to balance the cluster
+      optimal_move AS (
+        SELECT src.nodename source_node, src.shard_group, src.logicalrel_group, abs((size/node_count)::bigint-(node_size+group_size)) optimal_size, ind_size.nodename dest_node, group_size
+        FROM (
+          SELECT cs.nodename, group_size, shard_group, logicalrel_group from colocated_shard_sizes cs WHERE cs.nodename='#{source_node}'
+        )src,
+        ind_size, total
+        WHERE ind_size.nodename='#{dest_node}' ORDER BY optimal_size LIMIT 1
+      )
+
+      --- Pull out our information so we can then move our shard
+      SELECT source_node, dest_node, logicalrel_group, shard_group from optimal_move;
+    """
+  end
+
+  def get_shard_group(source_node, dest_node) do
+    shard_group_query(source_node, dest_node)
+    |> raw_query([], [timeout: 150000])
+    |> Map.get(:rows)
+    |> List.first
+  end
+
+  def relocating_shards(source_node \\ nil, dest_node \\ nil) do
     unless get_state().relocating do
-      shard_group =
-        raw_query("""
-          --- Calculate total size of the cluster, later we could adapt this if the individual was a certain percentage larger than the average would be
-          WITH total AS (
-          SELECT sum(result::bigint) as size, count(nodename) as node_count FROM (
-            SELECT nodename, nodeport, result
-            FROM run_command_on_workers($cmd$SELECT pg_database_size('#{@db_name}');$cmd$)
-          ) a ),
-
-          --- Get the size of each node
-          ind_size AS (
-            SELECT nodename, result::bigint as node_size
-            FROM run_command_on_workers($cmd$SELECT pg_database_size('#{@db_name}')::bigint;$cmd$)
-          ),
-
-          --- Save our most crowded node
-          most_crowded_node AS (
-            SELECT nodename
-            FROM ind_size, total
-            WHERE ind_size.node_size::bigint > ((cast(total.size as bigint) / cast(node_count as bigint))) ORDER BY ind_size.node_size::bigint DESC LIMIT 1
-          ),
-
-          --- Save our least crowded node
-          least_crowded_node AS (
-            SELECT nodename
-            FROM ind_size, total
-            WHERE ind_size.node_size::bigint < ((cast(total.size as bigint) / cast(node_count as bigint))) ORDER BY ind_size.node_size::bigint LIMIT 1
-          ),
-
-          --- Calculate the shard sizes, which includes data related by colocation groups
-          shard_sizes AS(
-            SELECT shardid, result::bigint size FROM
-            (SELECT (run_command_on_shards(logicalrelid::text,$cmd$SELECT pg_total_relation_size('%s')$cmd$)).*
-            FROM pg_dist_partition pp where pp.partmethod='h')a
-          ),
-          colocated_shard_sizes AS(
-            SELECT colocationid, nodename, shard_group, logicalrel_group, group_size
-            FROM
-            (
-              SELECT colocationid, nodename, array_agg(ps.shardid) shard_group, array_agg(pp.logicalrelid::text) logicalrel_group, sum(size) group_size
-              from shard_sizes ss, pg_dist_shard ps, pg_dist_shard_placement psp, pg_dist_partition pp
-              WHERE (ss.shardid=ps.shardid AND pp.logicalrelid=ps.logicalrelid AND psp.shardid=ps.shardid AND pp.partmethod='h')
-              GROUP BY shardmaxvalue, shardminvalue, nodename, colocationid
-            )a
-          ),
-
-          --- Get a shard with appropriate size to balance the cluster
-          optimal_move AS (
-            SELECT src.nodename source_node, src.shard_group, src.logicalrel_group, abs((size/node_count)::bigint-(node_size+group_size)) optimal_size, least_crowded_node.nodename dest_node, group_size
-            FROM (
-              SELECT mc.nodename, group_size, shard_group, logicalrel_group from colocated_shard_sizes cs, most_crowded_node mc WHERE cs.nodename=mc.nodename
-            )src,
-            ind_size, least_crowded_node, total
-            WHERE ind_size.nodename=least_crowded_node.nodename ORDER BY optimal_size LIMIT 1
-          )
-
-          --- Pull out our information so we can then move our shard
-          SELECT source_node, dest_node, logicalrel_group, shard_group from optimal_move;
-        """, [], [timeout: 150000])
-        |> Map.get(:rows)
-        |> List.first
+      shard_group = get_shard_group(source_node, dest_node)
 
       total = length(List.last(shard_group))
       set_state(%{total: total, current: 0, shard_group: shard_group, success_shards: [], errors: [], rollback: false, relocating: true})
