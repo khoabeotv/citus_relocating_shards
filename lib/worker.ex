@@ -229,7 +229,7 @@ defmodule Citus.Worker do
             success_shards = state.success_shards ++ [table_name]
             set_state(%{current: current, success_shards: success_shards})
 
-            drop_source_table()
+            spawn(fn -> drop_source_table() end)
             IO.inspect("#{current}/#{state.total}", label: "PROGRESS")
 
           source_count - dest_count < 500 && !Repo.in_transaction? && wal_is_active?(source_node, table_name) ->
