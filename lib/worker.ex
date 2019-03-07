@@ -154,7 +154,9 @@ defmodule Citus.Worker do
     rollback_shard_group(source_node, dest_node, logicalrel_group, shard_group)
   end
 
-  def rollback_shard_group(_, _, [], []), do: :ok
+  def rollback_shard_group(_, _, [], []) do
+    set_state(%{relocating: false})
+  end
 
   def rollback_shard_group(source_node, dest_node, [logicalrelid|logicalrel_tail], [shardid|shard_tail]) do
     table_name = "#{logicalrelid}_#{shardid}"
@@ -215,9 +217,9 @@ defmodule Citus.Worker do
           source_count - dest_count < get_state().min_diff && wal_is_active?(source_node, table_name) ->
             Repo.transaction(fn ->
               raw_query("LOCK TABLE #{logicalrelid} IN ROW EXCLUSIVE MODE")
-              Process.sleep(5000)
+              Process.sleep(30000)
               update_metadata(dest_node, shardid)
-            end)
+            end, [timeout: :infinity])
             |> case do
               {:ok, _} ->
                 drop_pub(source_node, "pub_#{table_name}")
