@@ -226,8 +226,8 @@ defmodule Citus.Worker do
                 drop_sub(dest_node, "sub_#{table_name}")
 
                 state = get_state()
-                current = state.current + 1
-                success_shards = state.success_shards ++ [table_name]
+                success_shards = (state.success_shards ++ [table_name]) |> Enum.uniq
+                current = length(success_shards)
                 set_state(%{current: current, success_shards: success_shards})
 
                 drop_source_table()
