@@ -7,7 +7,7 @@ defmodule Citus.Worker do
   @user System.get_env("POSTGRES_USER")
 
   def start_link(_),
-    do: Agent.start_link(fn -> %{total: 0, current: 0, success_shards: [], errors: [], rollback: false, shard_group: nil, relocating: false} end, name: __MODULE__)
+    do: Agent.start_link(fn -> %{total: 0, current: 0, success_shards: [], errors: [], rollback: false, shard_group: nil, relocating: false, min_diff: 100} end, name: __MODULE__)
 
   def set_state(state), do: Agent.update(__MODULE__, &Map.merge(&1, state))
   def get_state, do: Agent.get(__MODULE__, & &1)
@@ -132,7 +132,7 @@ defmodule Citus.Worker do
       shard_group = get_shard_group(source_node, dest_node)
 
       total = length(List.last(shard_group))
-      set_state(%{total: total, current: 0, shard_group: shard_group, success_shards: [], errors: [], rollback: false, relocating: true})
+      set_state(%{total: total, current: 0, shard_group: shard_group, success_shards: [], errors: [], rollback: false, relocating: true, min_diff: 100})
       [source_node, dest_node, logicalrel_group, shard_group] = shard_group
       move_shard_group(source_node, dest_node, logicalrel_group, shard_group)
       |> case do
@@ -176,7 +176,7 @@ defmodule Citus.Worker do
 
   def drop_source_table() do
     state = get_state()
-    if state.current == state.total do
+    if state.current == state.total && state.relocating do
       [source_node, _, logicalrel_group, shard_group] = state.shard_group
       drop_source_table(source_node, logicalrel_group, shard_group)
       set_state(%{relocating: false})
@@ -204,7 +204,7 @@ defmodule Citus.Worker do
 
   def check_wal_status(source_node, dest_node, logicalrelid, shardid) do
     unless get_state().rollback do
-      if Repo.in_transaction?, do: Process.sleep(200), else: Process.sleep(10000)
+      Process.sleep(10000)
       table_name = "#{logicalrelid}_#{shardid}"
 
       with {:ok, source_count} <- table_count(source_node, table_name),
@@ -212,35 +212,26 @@ defmodule Citus.Worker do
       do
         IO.inspect "#{table_name}: #{dest_count}/#{source_count}"
         cond do
-          source_count - dest_count < 100 && wal_is_active?(source_node, table_name) ->
-            update = fn ->
+          source_count - dest_count < get_state().min_diff && wal_is_active?(source_node, table_name) ->
+            Repo.transaction(fn ->
+              raw_query("LOCK TABLE #{logicalrelid} IN ROW EXCLUSIVE MODE")
               Process.sleep(5000)
               update_metadata(dest_node, shardid)
-            end
-            if Repo.in_transaction?, do: update.(), else: Repo.transaction(fn ->
-              raw_query("LOCK TABLE #{logicalrelid} IN ROW EXCLUSIVE MODE")
-              update.()
             end)
-            drop_pub(source_node, "pub_#{table_name}")
-            drop_sub(dest_node, "sub_#{table_name}")
+            |> case do
+              {:ok, _} ->
+                drop_pub(source_node, "pub_#{table_name}")
+                drop_sub(dest_node, "sub_#{table_name}")
 
-            state = get_state()
-            current = state.current + 1
-            success_shards = state.success_shards ++ [table_name]
-            set_state(%{current: current, success_shards: success_shards})
+                state = get_state()
+                current = state.current + 1
+                success_shards = state.success_shards ++ [table_name]
+                set_state(%{current: current, success_shards: success_shards})
 
-            spawn(fn -> drop_source_table() end)
-            IO.inspect("#{current}/#{state.total}", label: "PROGRESS")
+                drop_source_table()
+                IO.inspect("#{current}/#{state.total}", label: "PROGRESS")
 
-          source_count - dest_count < 500 && !Repo.in_transaction? && wal_is_active?(source_node, table_name) ->
-            try do
-              Repo.transaction(fn ->
-                raw_query("LOCK TABLE #{logicalrelid} IN ROW EXCLUSIVE MODE")
-                 check_wal_status(source_node, dest_node, logicalrelid, shardid)
-              end)
-            rescue
-              _ ->
-                check_wal_status(source_node, dest_node, logicalrelid, shardid)
+              _ -> check_wal_status(source_node, dest_node, logicalrelid, shardid)
             end
 
           true -> check_wal_status(source_node, dest_node, logicalrelid, shardid)
@@ -452,6 +443,10 @@ defmodule Citus.Worker do
   def shards_size() do
     raw_query("SELECT * FROM run_command_on_workers($$SELECT pg_size_pretty(pg_database_size('#{@db_name}'));$$)")
     |> Map.get(:rows)
+  end
+
+  def get_metadata() do
+    raw_query("SELECT * FROM pg_dist_placement WHERE shardid IN (#{Enum.join(List.last(get_state().shard_group), ",")})")
   end
 
   def raw_query(query, params \\ [], opts \\ []), do: Ecto.Adapters.SQL.query!(Repo, query, params, opts)
