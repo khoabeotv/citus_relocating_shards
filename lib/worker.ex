@@ -245,7 +245,7 @@ defmodule Citus.Worker do
   end
 
   def wal_is_active?(node, table_name) do
-    case run_command_on_worker(node, "SELECT pid FROM pg_stat_replication WHERE application_name = 'sub_#{table_name}'") do
+    case run_command_on_worker(node, "SELECT pid FROM pg_stat_replication WHERE application_name = 'sub_#{table_name}' AND state = 'streaming'") do
       {:ok, ""} -> false
       {:ok, _} -> true
       _ -> false
