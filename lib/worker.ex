@@ -216,7 +216,7 @@ defmodule Citus.Worker do
         cond do
           source_count - dest_count < get_state().min_diff && wal_is_active?(source_node, table_name) ->
             Repo.transaction(fn ->
-              raw_query("SELECT lock_shard_metadata(7, ARRAY[#{shardid}])")
+              raw_query("SELECT lock_shard_metadata(3, ARRAY[#{shardid}])")
               Process.sleep(60000)
               update_metadata(dest_node, shardid)
             end, [timeout: :infinity])
