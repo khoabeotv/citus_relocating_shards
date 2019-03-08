@@ -17,7 +17,7 @@ defmodule Citus.Worker do
             success_shards: [],
             error: nil,
             rollback: false,
-            relocating: true,
+            relocating: false,
             min_diff: 0,
             success_groups: [],
             group_count_down: 0
