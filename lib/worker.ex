@@ -7,7 +7,24 @@ defmodule Citus.Worker do
   @user System.get_env("POSTGRES_USER")
 
   def start_link(_),
-    do: Agent.start_link(fn -> %{total: 0, current: 0, success_shards: [], errors: [], rollback: false, shard_group: nil, relocating: false, min_diff: 100} end, name: __MODULE__)
+    do:
+      Agent.start_link(
+        fn ->
+          %{
+            total: 0,
+            current: 0,
+            shard_group: [],
+            success_shards: [],
+            error: nil,
+            rollback: false,
+            relocating: true,
+            min_diff: 0,
+            success_groups: [],
+            group_count_down: 0
+          }
+        end,
+        name: __MODULE__
+      )
 
   def set_state(state), do: Agent.update(__MODULE__, &Map.merge(&1, state))
   def get_state, do: Agent.get(__MODULE__, & &1)
@@ -109,7 +126,9 @@ defmodule Citus.Worker do
       optimal_move AS (
         SELECT src.nodename source_node, src.shard_group, src.logicalrel_group, abs((size/node_count)::bigint-(node_size+group_size)) optimal_size, ind_size.nodename dest_node, group_size
         FROM (
-          SELECT cs.nodename, group_size, shard_group, logicalrel_group from colocated_shard_sizes cs WHERE cs.nodename='#{source_node}'
+          SELECT cs.nodename, group_size, shard_group, logicalrel_group from colocated_shard_sizes cs WHERE cs.nodename='#{
+      source_node
+    }'
         )src,
         ind_size, total
         WHERE ind_size.nodename='#{dest_node}' ORDER BY optimal_size LIMIT 1
@@ -122,28 +141,45 @@ defmodule Citus.Worker do
 
   def get_shard_group(source_node, dest_node) do
     shard_group_query(source_node, dest_node)
-    |> raw_query([], [timeout: 150000])
+    |> raw_query([], timeout: 150_000)
     |> Map.get(:rows)
-    |> List.first
+    |> List.first()
   end
 
-  def relocating_shards(source_node \\ nil, dest_node \\ nil) do
+  def relocating_shards(source_node \\ nil, dest_node \\ nil, count \\ 1) do
     unless get_state().relocating do
       shard_group = get_shard_group(source_node, dest_node)
 
       total = length(List.last(shard_group))
-      set_state(%{total: total, current: 0, shard_group: shard_group, success_shards: [], errors: [], rollback: false, relocating: true, min_diff: 100})
+
+      set_state(%{
+        total: total,
+        current: 0,
+        shard_group: shard_group,
+        success_shards: [],
+        error: nil,
+        rollback: false,
+        relocating: true,
+        min_diff: 0,
+        success_groups: [],
+        group_count_down: count
+      })
+
       [source_node, dest_node, logicalrel_group, shard_group] = shard_group
+
       move_shard_group(source_node, dest_node, logicalrel_group, shard_group)
       |> case do
         :ok ->
           check_wal_status(source_node, dest_node, logicalrel_group, shard_group)
+
         {:error, error} ->
-          state = get_state()
-          errors = state.errors ++ [error]
-          set_state(%{errors: errors})
+          set_state(%{error: error})
           rollback_shard_group()
-          puts_notice(text: "MOVE_SHARD_GROUP_ERROR: #{source_node} - #{dest_node} \n #{inspect(error)}", failed: true)
+
+          puts_notice(
+            text: "MOVE_SHARD_GROUP_ERROR: #{source_node} - #{dest_node} \n #{inspect(error)}",
+            failed: true
+          )
       end
     end
   end
@@ -158,7 +194,9 @@ defmodule Citus.Worker do
     set_state(%{relocating: false})
   end
 
-  def rollback_shard_group(source_node, dest_node, [logicalrelid|logicalrel_tail], [shardid|shard_tail]) do
+  def rollback_shard_group(source_node, dest_node, [logicalrelid | logicalrel_tail], [
+        shardid | shard_tail
+      ]) do
     table_name = "#{logicalrelid}_#{shardid}"
 
     drop_pub(source_node, "pub_#{table_name}")
@@ -171,17 +209,28 @@ defmodule Citus.Worker do
 
   def drop_source_table(_, [], []), do: :ok
 
-  def drop_source_table(node, [logicalrelid|logicalrel_tail], [shardid|shard_tail]) do
+  def drop_source_table(node, [logicalrelid | logicalrel_tail], [shardid | shard_tail]) do
     run_command_on_worker(node, "DROP TABLE IF EXISTS #{logicalrelid}_#{shardid}")
     drop_source_table(node, logicalrel_tail, shard_tail)
   end
 
-  def drop_source_table() do
+  def drop_source_table(continue \\ true) do
     state = get_state()
+
     if state.current == state.total && state.relocating do
-      [source_node, _, logicalrel_group, shard_group] = state.shard_group
+      [source_node, dest_node, logicalrel_group, shard_group] = state.shard_group
       drop_source_table(source_node, logicalrel_group, shard_group)
-      set_state(%{relocating: false})
+
+      group_count_down = state.group_count_down - 1
+
+      set_state(%{
+        relocating: !(continue && group_count_down != 0),
+        success_groups: state ++ [state.shard_group],
+        group_count_down: group_count_down
+      })
+
+      if continue && group_count_down != 0,
+        do: relocating_shards(source_node, dest_node, group_count_down)
     end
   end
 
@@ -199,7 +248,9 @@ defmodule Citus.Worker do
 
   def check_wal_status(_, _, [], []), do: :ok
 
-  def check_wal_status(source_node, dest_node, [logicalrelid|logicalrel_tail], [shardid|shard_tail]) do
+  def check_wal_status(source_node, dest_node, [logicalrelid | logicalrel_tail], [
+        shardid | shard_tail
+      ]) do
     spawn(fn -> check_wal_status(source_node, dest_node, logicalrelid, shardid) end)
     check_wal_status(source_node, dest_node, logicalrel_tail, shard_tail)
   end
@@ -210,33 +261,39 @@ defmodule Citus.Worker do
       table_name = "#{logicalrelid}_#{shardid}"
 
       with {:ok, source_count} <- table_count(source_node, table_name),
-           {:ok, dest_count} <- table_count(dest_node, table_name)
-      do
-        IO.inspect "#{table_name}: #{dest_count}/#{source_count}"
+           {:ok, dest_count} <- table_count(dest_node, table_name) do
+        IO.inspect("#{table_name}: #{dest_count}/#{source_count}")
+
         cond do
-          source_count - dest_count < get_state().min_diff && wal_is_active?(source_node, table_name) ->
-            Repo.transaction(fn ->
-              raw_query("SELECT lock_shard_metadata(3, ARRAY[#{shardid}])")
-              Process.sleep(60000)
-              update_metadata(dest_node, shardid)
-            end, [timeout: :infinity])
+          source_count - dest_count <= get_state().min_diff &&
+              wal_is_active?(source_node, table_name) ->
+            Repo.transaction(
+              fn ->
+                raw_query("SELECT lock_shard_metadata(3, ARRAY[#{shardid}])")
+                Process.sleep(60000)
+                update_metadata(dest_node, shardid)
+              end,
+              timeout: :infinity
+            )
             |> case do
               {:ok, _} ->
                 drop_pub(source_node, "pub_#{table_name}")
                 drop_sub(dest_node, "sub_#{table_name}")
 
                 state = get_state()
-                success_shards = (state.success_shards ++ [table_name]) |> Enum.uniq
+                success_shards = (state.success_shards ++ [table_name]) |> Enum.uniq()
                 current = length(success_shards)
                 set_state(%{current: current, success_shards: success_shards})
 
                 drop_source_table()
                 IO.inspect("#{current}/#{state.total}", label: "PROGRESS")
 
-              _ -> check_wal_status(source_node, dest_node, logicalrelid, shardid)
+              _ ->
+                check_wal_status(source_node, dest_node, logicalrelid, shardid)
             end
 
-          true -> check_wal_status(source_node, dest_node, logicalrelid, shardid)
+          true ->
+            check_wal_status(source_node, dest_node, logicalrelid, shardid)
         end
       else
         _ -> check_wal_status(source_node, dest_node, logicalrelid, shardid)
@@ -245,7 +302,10 @@ defmodule Citus.Worker do
   end
 
   def wal_is_active?(node, table_name) do
-    case run_command_on_worker(node, "SELECT pid FROM pg_stat_replication WHERE application_name = 'sub_#{table_name}' AND state = 'streaming'") do
+    case run_command_on_worker(
+           node,
+           "SELECT pid FROM pg_stat_replication WHERE application_name = 'sub_#{table_name}' AND state = 'streaming'"
+         ) do
       {:ok, ""} -> false
       {:ok, _} -> true
       _ -> false
@@ -254,15 +314,20 @@ defmodule Citus.Worker do
 
   def table_count(node, table_name) do
     try do
-      case run_command_on_worker(node, "SELECT reltuples::bigint AS estimate FROM pg_class where relname='#{table_name}'") do
+      case run_command_on_worker(
+             node,
+             "SELECT reltuples::bigint AS estimate FROM pg_class where relname='#{table_name}'"
+           ) do
         {:ok, data} ->
           count = String.to_integer(data)
+
           cond do
-            count < 1000000 -> table_rel_count(node, table_name)
+            count < 1_000_000 -> table_rel_count(node, table_name)
             true -> {:ok, count}
           end
 
-        _ -> :error
+        _ ->
+          :error
       end
     rescue
       _ -> :error
@@ -272,19 +337,25 @@ defmodule Citus.Worker do
   def table_rel_count(node, table_name) do
     case run_command_on_worker(node, "SELECT count(1) FROM #{table_name}") do
       {:ok, data} -> {:ok, String.to_integer(data)}
-      _           -> :error
+      _ -> :error
     end
   end
 
   def move_shard_group(_, _, [], []), do: :ok
 
-  def move_shard_group(source_node, dest_node, [logicalrelid|logicalrel_tail], [shardid|shard_tail]) do
+  def move_shard_group(source_node, dest_node, [logicalrelid | logicalrel_tail], [
+        shardid | shard_tail
+      ]) do
     table_name = "#{logicalrelid}_#{shardid}"
 
-    with {:ok, _} <- create_pub(source_node, table_name) |> IO.inspect(label: "CREATE PUB #{table_name}"),
-         {:ok, _} <- clone_table(dest_node, logicalrelid, shardid) |> IO.inspect(label: "CREATE TABLE #{table_name}"),
-         {:ok, _} <- create_sub(dest_node, source_node, table_name) |> IO.inspect(label: "CREATE SUB #{table_name}")
-    do
+    with {:ok, _} <-
+           clone_table(dest_node, logicalrelid, shardid)
+           |> IO.inspect(label: "CREATE TABLE #{table_name}"),
+         {:ok, _} <-
+           create_pub(source_node, table_name) |> IO.inspect(label: "CREATE PUB #{table_name}"),
+         {:ok, _} <-
+           create_sub(dest_node, source_node, table_name)
+           |> IO.inspect(label: "CREATE SUB #{table_name}") do
       move_shard_group(source_node, dest_node, logicalrel_tail, shard_tail)
     else
       {:error, error} -> {:error, error}
@@ -293,6 +364,7 @@ defmodule Citus.Worker do
 
   def create_pub(node, table_name) do
     create_pub = "CREATE PUBLICATION pub_#{table_name} FOR TABLE #{table_name}"
+
     case run_command_on_worker(node, create_pub) do
       {:error, error} ->
         if String.contains?(error, "already exists") do
@@ -302,12 +374,17 @@ defmodule Citus.Worker do
           {:error, error}
         end
 
-      res -> res
+      res ->
+        res
     end
   end
 
   def create_sub(node, source_node, table_name) do
-    create_sub = "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{source_node} port=5432 user=#{@user} dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
+    create_sub =
+      "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{source_node} port=5432 user=#{
+        @user
+      } dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
+
     case run_command_on_worker(node, create_sub) do
       {:error, error} ->
         if String.contains?(error, "already exists") do
@@ -317,7 +394,8 @@ defmodule Citus.Worker do
           {:error, error}
         end
 
-      res -> res
+      res ->
+        res
     end
   end
 
@@ -340,7 +418,7 @@ defmodule Citus.Worker do
     primary_keys =
       schema
       |> Enum.filter(fn row -> List.last(row) end)
-      |> Enum.map(fn [name|_] -> name end)
+      |> Enum.map(fn [name | _] -> name end)
       |> Enum.join(", ")
 
     primary_keys = "CONSTRAINT #{source_table_name}_pkey_#{shardid} PRIMARY KEY (#{primary_keys})"
@@ -350,14 +428,19 @@ defmodule Citus.Worker do
       |> Enum.map(fn [name, type, nullable, default, _] ->
         column = "\"#{name}\" #{type}"
         column = if nullable == "NO", do: "#{column} NOT NULL", else: column
-        if default && !String.contains?(default, "nextval"), do: "#{column} DEFAULT #{default}", else: column
+
+        if default && !String.contains?(default, "nextval"),
+          do: "#{column} DEFAULT #{default}",
+          else: column
       end)
       |> Enum.join(", ")
 
     command = ["CREATE TABLE IF NOT EXISTS public.#{table_name}(#{columns}, #{primary_keys})"]
 
     indexes =
-      raw_query("SELECT indexname, indexdef FROM pg_indexes WHERE tablename = '#{source_table_name}'")
+      raw_query(
+        "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = '#{source_table_name}'"
+      )
       |> Map.get(:rows)
       |> Enum.filter(fn [indexname, _] -> !String.contains?(indexname, "pkey") end)
       |> Enum.map(fn [indexname, indexdef] ->
@@ -397,7 +480,14 @@ defmodule Citus.Worker do
           triggers
       """)
       |> Map.get(:rows)
-      |> Enum.map(fn [trigger_name, event_manipulation, action_condition, action_statement, action_orientation, action_timing] ->
+      |> Enum.map(fn [
+                       trigger_name,
+                       event_manipulation,
+                       action_condition,
+                       action_statement,
+                       action_orientation,
+                       action_timing
+                     ] ->
         """
           CREATE TRIGGER #{trigger_name}
           #{action_timing} #{Enum.join(event_manipulation, " OR ")}
@@ -420,38 +510,50 @@ defmodule Citus.Worker do
 
   def run_command_on_worker(node, command, parallel) do
     res =
-      raw_query("SELECT * FROM master_run_on_worker(ARRAY['#{node}'], ARRAY[5432], ARRAY[$cmd$#{command}$cmd$], #{parallel})")
+      raw_query(
+        "SELECT * FROM master_run_on_worker(ARRAY['#{node}'], ARRAY[5432], ARRAY[$cmd$#{command}$cmd$], #{
+          parallel
+        })"
+      )
       |> Map.get(:rows)
-      |> List.first
+      |> List.first()
 
     case Enum.at(res, 2) do
       true -> {:ok, List.last(res)}
-      _    -> {:error, List.last(res)}
+      _ -> {:error, List.last(res)}
     end
   end
 
   def run_command_on_worker(_, [], _, res), do: {:ok, res}
 
-  def run_command_on_worker(node, [command|tail], parallel, res) do
+  def run_command_on_worker(node, [command | tail], parallel, res) do
     case run_command_on_worker(node, command, parallel) do
       {:ok, data} ->
         res = res ++ [data]
         run_command_on_worker(node, tail, parallel, res)
 
-      error -> error
+      error ->
+        error
     end
   end
 
   def shards_size() do
-    raw_query("SELECT * FROM run_command_on_workers($$SELECT pg_size_pretty(pg_database_size('#{@db_name}'));$$)")
+    raw_query(
+      "SELECT * FROM run_command_on_workers($$SELECT pg_size_pretty(pg_database_size('#{@db_name}'));$$)"
+    )
     |> Map.get(:rows)
   end
 
   def get_metadata() do
-    raw_query("SELECT * FROM pg_dist_placement WHERE shardid IN (#{Enum.join(List.last(get_state().shard_group), ",")})")
+    raw_query(
+      "SELECT * FROM pg_dist_placement WHERE shardid IN (#{
+        Enum.join(List.last(get_state().shard_group), ",")
+      })"
+    )
   end
 
-  def raw_query(query, params \\ [], opts \\ []), do: Ecto.Adapters.SQL.query!(Repo, query, params, opts)
+  def raw_query(query, params \\ [], opts \\ []),
+    do: Ecto.Adapters.SQL.query!(Repo, query, params, opts)
 
   def puts_notice(options \\ []) do
     defaults = [text: "", failed: false]
@@ -459,9 +561,9 @@ defmodule Citus.Worker do
     %{text: text, failed: failed} = options
 
     if failed do
-      IO.puts IO.ANSI.red <> text <> IO.ANSI.reset
+      IO.puts(IO.ANSI.red() <> text <> IO.ANSI.reset())
     else
-      IO.puts IO.ANSI.green <> text <> IO.ANSI.reset
+      IO.puts(IO.ANSI.green() <> text <> IO.ANSI.reset())
     end
   end
 end
