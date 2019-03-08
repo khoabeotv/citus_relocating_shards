@@ -224,7 +224,7 @@ defmodule Citus.Worker do
       group_count_down = state.group_count_down - 1
 
       set_state(%{
-        relocating: !(continue && group_count_down != 0),
+        relocating: continue && group_count_down != 0,
         success_groups: state.success_groups ++ [state.shard_group],
         group_count_down: group_count_down
       })
