@@ -147,22 +147,25 @@ defmodule Citus.Worker do
   end
 
   def relocating_shards(source_node \\ nil, dest_node \\ nil, count \\ 1) do
-    unless get_state().relocating do
-      shard_group = get_shard_group(source_node, dest_node)
-
-      total = length(List.last(shard_group))
-
+    state = get_state()
+    unless state.relocating do
       set_state(%{
-        total: total,
-        current: 0,
-        shard_group: shard_group,
         success_shards: [],
         error: nil,
         rollback: false,
         relocating: true,
         min_diff: 0,
-        success_groups: [],
-        group_count_down: count
+        success_groups: (if state.group_count_down == 0, do: [], else: state.success_groups),
+        group_count_down: count,
+        current: 0
+      })
+
+      shard_group = get_shard_group(source_node, dest_node)
+      total = length(List.last(shard_group))
+
+      set_state(%{
+        total: total,
+        shard_group: shard_group
       })
 
       [source_node, dest_node, logicalrel_group, shard_group] = shard_group
@@ -224,7 +227,7 @@ defmodule Citus.Worker do
       group_count_down = state.group_count_down - 1
 
       set_state(%{
-        relocating: continue && group_count_down != 0,
+        relocating: false,
         success_groups: state.success_groups ++ [state.shard_group],
         group_count_down: group_count_down
       })
