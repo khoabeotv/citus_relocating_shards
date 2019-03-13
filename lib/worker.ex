@@ -383,6 +383,7 @@ defmodule Citus.Worker do
   end
 
   def create_sub(node, source_node, table_name) do
+    Process.sleep(10000)
     create_sub =
       "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{source_node} port=5432 user=#{
         @user
