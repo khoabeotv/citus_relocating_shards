@@ -140,10 +140,14 @@ defmodule Citus.Worker do
   end
 
   def get_shard_group(source_node, dest_node) do
-    shard_group_query(source_node, dest_node)
-    |> raw_query([], timeout: 150_000)
-    |> Map.get(:rows)
-    |> List.first()
+    try do
+      shard_group_query(source_node, dest_node)
+      |> raw_query([], timeout: 150_000)
+      |> Map.get(:rows)
+      |> List.first()
+    rescue
+      _ -> get_shard_group(source_node, dest_node)
+    end
   end
 
   def relocating_shards(source_node \\ nil, dest_node \\ nil, count \\ 1) do
@@ -157,7 +161,9 @@ defmodule Citus.Worker do
         min_diff: 0,
         success_groups: (if state.group_count_down == 0, do: [], else: state.success_groups),
         group_count_down: count,
-        current: 0
+        current: 0,
+        total: 0,
+        shard_group: []
       })
 
       shard_group = get_shard_group(source_node, dest_node)
