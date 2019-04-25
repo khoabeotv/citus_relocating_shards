@@ -210,16 +210,25 @@ defmodule Citus.Worker do
 
     drop_pub(source_node, "pub_#{table_name}")
     drop_sub(dest_node, "sub_#{table_name}")
-    run_command_on_worker(dest_node, "DROP TABLE IF EXISTS #{table_name}")
+    drop_table(table_name, dest_node)
     update_metadata(source_node, shardid)
 
     rollback_shard_group(source_node, dest_node, logicalrel_tail, shard_tail)
   end
 
+  def drop_table(table_name, node) do
+    case run_command_on_worker(node, "DROP TABLE IF EXISTS #{table_name}") do
+      {:ok, _} -> :ok
+      _        -> drop_table(table_name, node)
+    end
+  rescue
+    _ -> drop_table(table_name, node)
+  end
+
   def drop_source_table(_, [], []), do: :ok
 
   def drop_source_table(node, [logicalrelid | logicalrel_tail], [shardid | shard_tail]) do
-    run_command_on_worker(node, "DROP TABLE IF EXISTS #{logicalrelid}_#{shardid}")
+    drop_table("#{logicalrelid}_#{shardid}", node)
     drop_source_table(node, logicalrel_tail, shard_tail)
   end
 
