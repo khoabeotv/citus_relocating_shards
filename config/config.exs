@@ -29,7 +29,6 @@ use Mix.Config
 #
 #     import_config "#{Mix.env()}.exs"
 config :citus, Citus.Repo,
-  adapter: Ecto.Adapters.Postgres,
   username: "adcake",
   password: "adcake",
   database: "adcake_api_dev",
