@@ -367,7 +367,7 @@ defmodule Citus.Worker do
     table_name = "#{logicalrelid}_#{shardid}"
 
     with {:ok, _} <-
-           clone_table(dest_node, logicalrelid, shardid)
+           clone_table(source_node, dest_node, logicalrelid, shardid)
            |> IO.inspect(label: "CREATE TABLE #{table_name}"),
          {:ok, _} <-
            create_pub(source_node, table_name) |> IO.inspect(label: "CREATE PUB #{table_name}"),
@@ -421,7 +421,7 @@ defmodule Citus.Worker do
 
   def drop_sub(node, sub_name), do: run_command_on_worker(node, "DROP SUBSCRIPTION #{sub_name}")
 
-  def clone_table(node, source_table_name, shardid) do
+  def clone_table(source_node, node, source_table_name, shardid) do
     table_name = "#{source_table_name}_#{shardid}"
 
     schema =
@@ -456,14 +456,16 @@ defmodule Citus.Worker do
     command = ["CREATE TABLE IF NOT EXISTS public.#{table_name}(#{columns}, #{primary_keys})"]
 
     indexes =
-      raw_query(
-        "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = '#{source_table_name}'"
-      )
-      |> Map.get(:rows)
-      |> Enum.filter(fn [indexname, _] -> !String.contains?(indexname, "pkey") end)
-      |> Enum.map(fn [indexname, indexdef] ->
-        String.replace(indexdef, indexname, "#{indexname}_#{shardid}")
-        |> String.replace("public.#{source_table_name}", "public.#{table_name}")
+      run_command_on_worker()
+
+      run_command_on_worker(source_node, "SELECT array_agg(indexdef) FROM pg_indexes WHERE tablename = '#{table_name}'")
+      |> elem(1)
+      |> String.replace(~r/.$/, "]")
+      |> String.replace(~r/^./, "[")
+      |> Poison.decode!
+      |> Enum.filter(fn indexdef -> !String.contains?(indexname, "pkey") end)
+      |> Enum.map(fn indexdef ->
+        indexdef
         |> String.replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS")
         |> String.replace("CREATE UNIQUE INDEX", "CREATE UNIQUE INDEX IF NOT EXISTS")
       end)
