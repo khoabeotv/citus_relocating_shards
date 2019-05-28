@@ -456,14 +456,12 @@ defmodule Citus.Worker do
     command = ["CREATE TABLE IF NOT EXISTS public.#{table_name}(#{columns}, #{primary_keys})"]
 
     indexes =
-      run_command_on_worker()
-
       run_command_on_worker(source_node, "SELECT array_agg(indexdef) FROM pg_indexes WHERE tablename = '#{table_name}'")
       |> elem(1)
       |> String.replace(~r/.$/, "]")
       |> String.replace(~r/^./, "[")
       |> Poison.decode!
-      |> Enum.filter(fn indexdef -> !String.contains?(indexname, "pkey") end)
+      |> Enum.filter(fn indexdef -> !String.contains?(indexdef, "pkey") end)
       |> Enum.map(fn indexdef ->
         indexdef
         |> String.replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS")
