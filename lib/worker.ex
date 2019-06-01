@@ -417,9 +417,19 @@ defmodule Citus.Worker do
     end
   end
 
-  def drop_pub(node, pub_name), do: run_command_on_worker(node, "DROP PUBLICATION #{pub_name}")
+  def drop_pub(node, pub_name) do
+    run_command_on_worker(node, "DROP PUBLICATION #{pub_name}")
+  rescue
+    _ ->
+      drop_pub(node, pub_name)
+  end
 
-  def drop_sub(node, sub_name), do: run_command_on_worker(node, "DROP SUBSCRIPTION #{sub_name}")
+  def drop_sub(node, sub_name) do
+    run_command_on_worker(node, "DROP SUBSCRIPTION #{sub_name}")
+  rescue
+    _ ->
+      drop_sub(node, sub_name)
+  end
 
   def clone_table(source_node, node, source_table_name, shardid) do
     table_name = "#{source_table_name}_#{shardid}"
