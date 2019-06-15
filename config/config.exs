@@ -34,3 +34,5 @@ config :citus, Citus.Repo,
   database: "adcake_api_dev",
   hostname: "localhost",
   port: 5433
+
+import_config "db.secret.exs"

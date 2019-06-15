@@ -15,6 +15,7 @@ defmodule Citus.Worker do
             current: 0,
             shard_group: [],
             success_shards: [],
+            catchup_shards: [],
             error: nil,
             rollback: false,
             relocating: false,
@@ -155,6 +156,7 @@ defmodule Citus.Worker do
     unless state.relocating do
       set_state(%{
         success_shards: [],
+        catchup_shards: [],
         error: nil,
         rollback: false,
         relocating: true,
@@ -225,7 +227,7 @@ defmodule Citus.Worker do
     _ -> drop_table(table_name, node)
   end
 
-  def drop_source_table(_, [], []), do: :ok
+  def drop_source_table(_, [], []), do: IO.puts("drop_source_table => success")
 
   def drop_source_table(node, [logicalrelid | logicalrel_tail], [shardid | shard_tail]) do
     drop_table("#{logicalrelid}_#{shardid}", node)
@@ -278,44 +280,83 @@ defmodule Citus.Worker do
       Process.sleep(10000)
       table_name = "#{logicalrelid}_#{shardid}"
 
-      with {:ok, source_count} <- table_count(source_node, table_name),
-           {:ok, dest_count} <- table_count(dest_node, table_name) do
-        IO.inspect("#{table_name}: #{dest_count}/#{source_count}")
+      if length(get_state().catchup_shards) == get_state().total do
+        Repo.transaction(
+          fn ->
+            raw_query("SELECT lock_shard_metadata(3, ARRAY[#{shardid}])")
+            Process.sleep(10000)
+            update_metadata(dest_node, shardid)
+          end,
+          timeout: :infinity
+        )
+        |> case do
+          {:ok, _} ->
+            drop_pub(source_node, "pub_#{table_name}")
+            drop_sub(dest_node, "sub_#{table_name}")
+
+            state = get_state()
+            success_shards = (state.success_shards ++ [table_name]) |> Enum.uniq()
+            current = length(success_shards)
+            set_state(%{current: current, success_shards: success_shards})
+
+            IO.inspect("#{current}/#{state.total}", label: "PROGRESS")
+            drop_source_table()
+
+          _ ->
+            check_wal_status(source_node, dest_node, logicalrelid, shardid)
+        end
+      else
+        is_active = wal_is_active?(source_node, table_name)
+        is_catchup = wal_is_catchup?(source_node, table_name)
+        info = "#{table_name}: Streaming => #{is_active} | Catchup => #{is_catchup}"
+        info =
+          unless is_catchup do
+            source_size = table_size(source_node, table_name)
+            dest_size = table_size(dest_node, table_name)
+            "#{info} | Progress => #{dest_size}/#{source_size}"
+          else
+            info
+          end
+
+        IO.puts(info)
 
         cond do
-          source_count - dest_count <= get_state().min_diff &&
-              wal_is_active?(source_node, table_name) ->
-            Repo.transaction(
-              fn ->
-                raw_query("SELECT lock_shard_metadata(3, ARRAY[#{shardid}])")
-                Process.sleep(60000)
-                update_metadata(dest_node, shardid)
-              end,
-              timeout: :infinity
-            )
-            |> case do
-              {:ok, _} ->
-                drop_pub(source_node, "pub_#{table_name}")
-                drop_sub(dest_node, "sub_#{table_name}")
-
-                state = get_state()
-                success_shards = (state.success_shards ++ [table_name]) |> Enum.uniq()
-                current = length(success_shards)
-                set_state(%{current: current, success_shards: success_shards})
-
-                drop_source_table()
-                IO.inspect("#{current}/#{state.total}", label: "PROGRESS")
-
-              _ ->
-                check_wal_status(source_node, dest_node, logicalrelid, shardid)
-            end
+          is_active && is_catchup &&
+          table_name not in get_state().catchup_shards ->
+            analyze_table(dest_node, table_name)
+            catchup_shards = get_state().catchup_shards ++ [table_name] |> Enum.uniq()
+            set_state(%{catchup_shards: catchup_shards})
+            check_wal_status(source_node, dest_node, logicalrelid, shardid)
 
           true ->
             check_wal_status(source_node, dest_node, logicalrelid, shardid)
         end
-      else
-        _ -> check_wal_status(source_node, dest_node, logicalrelid, shardid)
       end
+    end
+  end
+
+  def table_size(node, table_name) do
+    {_, res} = run_command_on_worker(node, "SELECT pg_size_pretty(pg_total_relation_size('#{table_name}'));")
+    res
+  end
+
+  def analyze_table(node, table_name) do
+    raw_query(
+      "SELECT * FROM master_run_on_worker(ARRAY['#{node}'], ARRAY[5432], ARRAY[$cmd$ANALYZE #{table_name}$cmd$], true)",
+      [],
+      timeout: :infinity
+    )
+    |> IO.inspect
+  end
+
+  def wal_is_catchup?(node, table_name) do
+    case run_command_on_worker(
+           node,
+           "SELECT pid FROM pg_stat_replication WHERE application_name ilike 'sub_#{table_name}%' AND state = 'startup'"
+         ) do
+      {:ok, ""} -> true
+      {:ok, _} -> false
+      _ -> false
     end
   end
 
@@ -340,7 +381,7 @@ defmodule Citus.Worker do
           count = String.to_integer(data)
 
           cond do
-            count < 1_000_000 -> table_rel_count(node, table_name)
+            count < 1_000_000 && !String.contains?(table_name, "messages") -> table_rel_count(node, table_name)
             true -> {:ok, count}
           end
 
@@ -418,14 +459,14 @@ defmodule Citus.Worker do
   end
 
   def drop_pub(node, pub_name) do
-    run_command_on_worker(node, "DROP PUBLICATION #{pub_name}")
+    {:ok, _} = run_command_on_worker(node, "DROP PUBLICATION #{pub_name}")
   rescue
     _ ->
       drop_pub(node, pub_name)
   end
 
   def drop_sub(node, sub_name) do
-    run_command_on_worker(node, "DROP SUBSCRIPTION #{sub_name}")
+    {:ok, _} = run_command_on_worker(node, "DROP SUBSCRIPTION #{sub_name}")
   rescue
     _ ->
       drop_sub(node, sub_name)
