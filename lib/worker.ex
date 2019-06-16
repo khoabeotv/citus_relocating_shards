@@ -210,8 +210,8 @@ defmodule Citus.Worker do
       ]) do
     table_name = "#{logicalrelid}_#{shardid}"
 
-    drop_pub(source_node, "pub_#{table_name}")
     drop_sub(dest_node, "sub_#{table_name}")
+    drop_pub(source_node, "pub_#{table_name}")
     drop_table(table_name, dest_node)
     update_metadata(source_node, shardid)
 
@@ -291,8 +291,8 @@ defmodule Citus.Worker do
         )
         |> case do
           {:ok, _} ->
-            drop_pub(source_node, "pub_#{table_name}")
             drop_sub(dest_node, "sub_#{table_name}")
+            drop_pub(source_node, "pub_#{table_name}")
 
             state = get_state()
             success_shards = (state.success_shards ++ [table_name]) |> Enum.uniq()
@@ -300,7 +300,7 @@ defmodule Citus.Worker do
             set_state(%{current: current, success_shards: success_shards})
 
             IO.inspect("#{current}/#{state.total}", label: "PROGRESS")
-            drop_source_table()
+            # drop_source_table()
 
           _ ->
             check_wal_status(source_node, dest_node, logicalrelid, shardid)
@@ -459,14 +459,32 @@ defmodule Citus.Worker do
   end
 
   def drop_pub(node, pub_name) do
-    {:ok, _} = run_command_on_worker(node, "DROP PUBLICATION #{pub_name}")
+    case run_command_on_worker(node, "DROP PUBLICATION #{pub_name}") do
+      {:error, error} ->
+        if String.contains?(error, "does not exist") do
+          :ok
+        else
+          drop_pub(node, pub_name)
+        end
+
+      {:ok, _} -> :ok
+    end
   rescue
     _ ->
       drop_pub(node, pub_name)
   end
 
   def drop_sub(node, sub_name) do
-    {:ok, _} = run_command_on_worker(node, "DROP SUBSCRIPTION #{sub_name}")
+    case run_command_on_worker(node, "DROP SUBSCRIPTION #{sub_name}") do
+      {:error, error} ->
+        if String.contains?(error, "does not exist") do
+          :ok
+        else
+          drop_sub(node, sub_name)
+        end
+
+      {:ok, _} -> :ok
+    end
   rescue
     _ ->
       drop_sub(node, sub_name)
