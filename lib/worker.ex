@@ -418,8 +418,8 @@ defmodule Citus.Worker do
            |> IO.inspect(label: "CREATE TABLE #{table_name}"),
          {:ok, _} <-
            create_pub(source_node, table_name) |> IO.inspect(label: "CREATE PUB #{table_name}"),
-         {:ok, _} <-
-           create_slot(source_node, table_name) |> IO.inspect(label: "CREATE SLOT #{table_name}"),
+         # {:ok, _} <-
+         #   create_slot(source_node, table_name) |> IO.inspect(label: "CREATE SLOT #{table_name}"),
          {:ok, _} <-
            create_sub(dest_node, source_node, table_name)
            |> IO.inspect(label: "CREATE SUB #{table_name}") do
@@ -467,7 +467,7 @@ defmodule Citus.Worker do
     create_sub =
       "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{source_node} port=5432 user=#{
         @user
-      } dbname=#{@db_name}' PUBLICATION pub_#{table_name} WITH (create_slot = false)"
+      } dbname=#{@db_name}' PUBLICATION pub_#{table_name}" # WITH (create_slot = false)
 
     case run_command_on_worker(node, create_sub) do
       {:error, error} ->
