@@ -349,12 +349,18 @@ defmodule Citus.Worker do
     |> IO.inspect
   end
 
-  def wal_is_catchup?(node, table_name) do
+  def wal_is_catchup?(node, table_name, count \\ 0) do
     case run_command_on_worker(
            node,
            "SELECT pid FROM pg_stat_replication WHERE application_name ilike 'sub_#{table_name}%' AND state = 'startup'"
          ) do
-      {:ok, ""} -> true
+      {:ok, ""} ->
+        if count == 5 do
+          true
+        else
+          :timer.sleep(3000)
+          wal_is_catchup?(node, table_name, count + 1)
+        end
       {:ok, _} -> false
       _ -> false
     end
