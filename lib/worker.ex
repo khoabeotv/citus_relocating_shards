@@ -419,6 +419,8 @@ defmodule Citus.Worker do
          {:ok, _} <-
            create_pub(source_node, table_name) |> IO.inspect(label: "CREATE PUB #{table_name}"),
          {:ok, _} <-
+           create_slot(source_node, table_name) |> IO.inspect(label: "CREATE SLOT #{table_name}"),
+         {:ok, _} <-
            create_sub(dest_node, source_node, table_name)
            |> IO.inspect(label: "CREATE SUB #{table_name}") do
       move_shard_group(source_node, dest_node, logicalrel_tail, shard_tail)
@@ -444,11 +446,28 @@ defmodule Citus.Worker do
     end
   end
 
+  def create_slot(node, table_name) do
+    create_slot = "SELECT * FROM pg_create_logical_replication_slot('sub_#{table_name}', 'pgoutput');"
+
+    case run_command_on_worker(node, create_slot) do
+      {:error, error} ->
+        if String.contains?(error, "already exists") do
+          run_command_on_worker(node, "SELECT pg_drop_replication_slot('sub_#{table_name}');")
+          create_slot(node, table_name)
+        else
+          {:error, error}
+        end
+
+      res ->
+        res
+    end
+  end
+
   def create_sub(node, source_node, table_name) do
     create_sub =
       "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{source_node} port=5432 user=#{
         @user
-      } dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
+      } dbname=#{@db_name}' PUBLICATION pub_#{table_name} WITH (create_slot = false)"
 
     case run_command_on_worker(node, create_sub) do
       {:error, error} ->
@@ -594,7 +613,7 @@ defmodule Citus.Worker do
     command = command ++ triggers
 
     ret = run_command_on_worker(node, command)
-    Process.sleep(20000)
+    Process.sleep(5000)
     ret
   end
 
