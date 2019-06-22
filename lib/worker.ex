@@ -335,6 +335,7 @@ defmodule Citus.Worker do
             is_active && is_catchup &&
             table_name not in get_state().catchup_shards ->
               analyze_table(dest_node, table_name)
+              check_wal_status(source_node, dest_node, logicalrelid, shardid)
 
             true ->
               check_wal_status(source_node, dest_node, logicalrelid, shardid)
