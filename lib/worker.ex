@@ -308,7 +308,11 @@ defmodule Citus.Worker do
       else
         is_active = wal_is_active?(source_node, table_name)
         is_catchup = wal_is_catchup?(source_node, table_name)
-        info = "#{table_name}: Streaming => #{is_active} | Catchup => #{is_catchup}"
+        source_count = table_count(source_node, table_name)
+        dest_count = table_count(dest_node, table_name)
+        count_match = source_count - dest_count <= get_state().min_diff
+
+        info = "#{table_name}: Streaming => #{is_active} | Catchup => #{is_catchup} | #{dest_count}/#{source_count}"
         info =
           unless is_catchup do
             source_size = table_size(source_node, table_name)
@@ -321,12 +325,15 @@ defmodule Citus.Worker do
         IO.puts(info)
 
         cond do
-          is_active && is_catchup &&
+          is_active && is_catchup && count_match &&
           table_name not in get_state().catchup_shards ->
-            analyze_table(dest_node, table_name)
             catchup_shards = get_state().catchup_shards ++ [table_name] |> Enum.uniq()
             set_state(%{catchup_shards: catchup_shards})
             check_wal_status(source_node, dest_node, logicalrelid, shardid)
+
+          is_active && is_catchup &&
+          table_name not in get_state().catchup_shards ->
+            analyze_table(dest_node, table_name)
 
           true ->
             check_wal_status(source_node, dest_node, logicalrelid, shardid)
@@ -385,11 +392,11 @@ defmodule Citus.Worker do
            ) do
         {:ok, data} ->
           count = String.to_integer(data)
-
-          cond do
-            count < 1_000_000 && !String.contains?(table_name, "messages") -> table_rel_count(node, table_name)
-            true -> {:ok, count}
-          end
+          {:ok, count}
+          # cond do
+          #   count < 1_000_000 && !String.contains?(table_name, "messages") -> table_rel_count(node, table_name)
+          #   true -> {:ok, count}
+          # end
 
         _ ->
           :error
