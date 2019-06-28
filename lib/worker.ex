@@ -1,10 +1,32 @@
 defmodule Citus.Worker do
   use Agent
 
-  alias Citus.Repo
+  alias Citus.{Repo, SubRepo}
 
   @db_name System.get_env("POSTGRES_DB")
   @user System.get_env("POSTGRES_USER")
+  @sub_conf Application.get_env :citus, SubRepo
+
+  def test_lock do
+    Repo.transaction(fn ->
+      raw_query("SELECT lock_shard_metadata(3, ARRAY[102652])")
+      Process.sleep(20000)
+    end)
+  end
+
+  def setup_subrepo() do
+    ["pg_dist_partition", "pg_dist_shard", "pg_dist_placement", "pg_dist_node", "pg_dist_colocation"]
+    |> Enum.each(fn table_name ->
+      create_pub = "CREATE PUBLICATION pub_#{table_name} FOR TABLE #{table_name}"
+      Ecto.Adapters.SQL.query!(Repo, create_pub, []) |> IO.inspect(label: "CREATE_PUB")
+
+      create_sub =
+        "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{@sub_conf[:hostname]} port=5432 user=#{
+          @user
+        } dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
+      Ecto.Adapters.SQL.query!(Repo, create_pub, []) |> IO.inspect(label: "CREATE_SUB")
+    end)
+  end
 
   def start_link(_),
     do:

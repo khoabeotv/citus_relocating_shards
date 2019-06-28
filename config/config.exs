@@ -35,4 +35,11 @@ config :citus, Citus.Repo,
   hostname: "localhost",
   port: 5433
 
+config :citus, Citus.SubRepo,
+  username: "adcake",
+  password: "adcake",
+  database: "adcake_api_dev",
+  hostname: "localhost",
+  port: 5433
+
 import_config "db.secret.exs"
