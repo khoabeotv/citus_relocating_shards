@@ -8,8 +8,6 @@ defmodule Citus do
     if DynamicSupervisor.count_children(__MODULE__)[:active] == 0 do
       DynamicSupervisor.start_child(__MODULE__, {Citus.Repo, []})
       DynamicSupervisor.start_child(__MODULE__, {Citus.Worker, []})
-
-      if opts[:sub_setup], do: DynamicSupervisor.start_child(__MODULE__, {Citus.SubRepo, []})
     end
   end
 end

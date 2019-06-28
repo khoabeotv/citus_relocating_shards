@@ -1,7 +1,7 @@
 defmodule Citus.Worker do
   use Agent
 
-  alias Citus.{Repo, SubRepo}
+  alias Citus.Repo
 
   @db_name System.get_env("POSTGRES_DB")
   @user System.get_env("POSTGRES_USER")
@@ -14,19 +14,19 @@ defmodule Citus.Worker do
     end)
   end
 
-  def setup_subrepo() do
-    ["pg_dist_partition", "pg_dist_shard", "pg_dist_placement", "pg_dist_node", "pg_dist_colocation"]
-    |> Enum.each(fn table_name ->
-      create_pub = "CREATE PUBLICATION pub_#{table_name} FOR TABLE #{table_name}"
-      Ecto.Adapters.SQL.query!(Repo, create_pub, []) |> IO.inspect(label: "CREATE_PUB")
+  # def setup_subrepo() do
+  #   ["pg_dist_partition", "pg_dist_shard", "pg_dist_placement", "pg_dist_node", "pg_dist_colocation"]
+  #   |> Enum.each(fn table_name ->
+  #     create_pub = "CREATE PUBLICATION pub_#{table_name} FOR TABLE #{table_name}"
+  #     Ecto.Adapters.SQL.query!(Repo, create_pub, []) |> IO.inspect(label: "CREATE_PUB")
 
-      create_sub =
-        "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{@sub_conf[:hostname]} port=5432 user=#{
-          @user
-        } dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
-      Ecto.Adapters.SQL.query!(SubRepo, create_sub, []) |> IO.inspect(label: "CREATE_SUB")
-    end)
-  end
+  #     create_sub =
+  #       "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{@sub_conf[:hostname]} port=5432 user=#{
+  #         @user
+  #       } dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
+  #     Ecto.Adapters.SQL.query!(SubRepo, create_sub, []) |> IO.inspect(label: "CREATE_SUB")
+  #   end)
+  # end
 
   def start_link(_),
     do:
