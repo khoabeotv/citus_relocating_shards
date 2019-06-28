@@ -24,7 +24,7 @@ defmodule Citus.Worker do
         "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{@sub_conf[:hostname]} port=5432 user=#{
           @user
         } dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
-      Ecto.Adapters.SQL.query!(Repo, create_pub, []) |> IO.inspect(label: "CREATE_SUB")
+      Ecto.Adapters.SQL.query!(SubRepo, create_sub, []) |> IO.inspect(label: "CREATE_SUB")
     end)
   end
 
