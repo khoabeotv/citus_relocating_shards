@@ -21,7 +21,7 @@ defmodule Citus.Worker do
   #     Ecto.Adapters.SQL.query!(Repo, create_pub, []) |> IO.inspect(label: "CREATE_PUB")
 
   #     create_sub =
-  #       "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{@sub_conf[:hostname]} port=6432 user=#{
+  #       "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{@sub_conf[:hostname]} port=5432 user=#{
   #         @user
   #       } dbname=#{@db_name}' PUBLICATION pub_#{table_name}"
   #     Ecto.Adapters.SQL.query!(SubRepo, create_sub, []) |> IO.inspect(label: "CREATE_SUB")
@@ -376,7 +376,7 @@ defmodule Citus.Worker do
 
   def analyze_table(node, table_name) do
     raw_query(
-      "SELECT * FROM master_run_on_worker(ARRAY['#{node}'], ARRAY[6432], ARRAY[$cmd$ANALYZE #{table_name}$cmd$], true)",
+      "SELECT * FROM master_run_on_worker(ARRAY['#{node}'], ARRAY[5432], ARRAY[$cmd$ANALYZE #{table_name}$cmd$], true)",
       [],
       timeout: :infinity
     )
@@ -499,7 +499,7 @@ defmodule Citus.Worker do
 
   def create_sub(node, source_node, table_name) do
     create_sub =
-      "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{source_node} port=6432 user=#{
+      "CREATE SUBSCRIPTION sub_#{table_name} connection 'host=#{source_node} port=5432 user=#{
         @user
       } dbname=#{@db_name}' PUBLICATION pub_#{table_name}" # WITH (create_slot = false)
 
@@ -659,7 +659,7 @@ defmodule Citus.Worker do
   def run_command_on_worker(node, command, parallel) do
     res =
       raw_query(
-        "SELECT * FROM master_run_on_worker(ARRAY['#{node}'], ARRAY[6432], ARRAY[$cmd$#{command}$cmd$], #{
+        "SELECT * FROM master_run_on_worker(ARRAY['#{node}'], ARRAY[5432], ARRAY[$cmd$#{command}$cmd$], #{
           parallel
         })"
       )
