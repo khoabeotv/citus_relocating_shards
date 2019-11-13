@@ -380,7 +380,7 @@ defmodule Citus.Worker do
       [],
       timeout: :infinity
     )
-    |> IO.inspect
+    |> IO.inspect(label: table_name)
   end
 
   def wal_is_catchup?(node, table_name, count \\ 0) do
