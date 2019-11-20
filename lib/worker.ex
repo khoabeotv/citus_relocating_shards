@@ -701,7 +701,7 @@ defmodule Citus.Worker do
   end
 
   def raw_query(query, params \\ [], opts \\ []),
-    do: Ecto.Adapters.SQL.query!(Repo, query, params, opts)
+    do: Ecto.Adapters.SQL.query!(Repo, query, params, Keyword.put(opts, :timeout, :infinity))
 
   def puts_notice(options \\ []) do
     defaults = [text: "", failed: false]
