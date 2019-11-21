@@ -52,7 +52,7 @@ defmodule Citus.Worker do
   def set_state(state), do: Agent.update(__MODULE__, &Map.merge(&1, state))
   def get_state, do: Agent.get(__MODULE__, & &1)
 
-  def shard_group_query(source_node, dest_node) when is_nil(source_node) or is_nil(dest_node) do
+  def shard_group_query(source_node, dest_node, select_max) when is_nil(source_node) or is_nil(dest_node) do
     """
       --- Calculate total size of the cluster, later we could adapt this if the individual was a certain percentage larger than the average would be
       WITH total AS (
@@ -105,7 +105,7 @@ defmodule Citus.Worker do
           SELECT mc.nodename, group_size, shard_group, logicalrel_group from colocated_shard_sizes cs, most_crowded_node mc WHERE cs.nodename=mc.nodename
         )src,
         ind_size, least_crowded_node, total
-        WHERE ind_size.nodename=least_crowded_node.nodename ORDER BY optimal_size LIMIT 1
+        WHERE ind_size.nodename=least_crowded_node.nodename ORDER BY optimal_size #{(if select_max, do: "", else: "DESC")} LIMIT 1
       )
 
       --- Pull out our information so we can then move our shard
@@ -113,7 +113,7 @@ defmodule Citus.Worker do
     """
   end
 
-  def shard_group_query(source_node, dest_node) do
+  def shard_group_query(source_node, dest_node, select_max) do
     """
       --- Calculate total size of the cluster, later we could adapt this if the individual was a certain percentage larger than the average would be
       WITH total AS (
@@ -154,7 +154,7 @@ defmodule Citus.Worker do
     }'
         )src,
         ind_size, total
-        WHERE ind_size.nodename='#{dest_node}' ORDER BY optimal_size LIMIT 1
+        WHERE ind_size.nodename='#{dest_node}' ORDER BY optimal_size #{(if select_max, do: "", else: "DESC")} LIMIT 1
       )
 
       --- Pull out our information so we can then move our shard
@@ -162,18 +162,18 @@ defmodule Citus.Worker do
     """
   end
 
-  def get_shard_group(source_node, dest_node) do
+  def get_shard_group(source_node, dest_node, select_max) do
     try do
-      shard_group_query(source_node, dest_node)
+      shard_group_query(source_node, dest_node, select_max)
       |> raw_query([], timeout: 150_000)
       |> Map.get(:rows)
       |> List.first()
     rescue
-      _ -> get_shard_group(source_node, dest_node)
+      _ -> get_shard_group(source_node, dest_node, select_max)
     end
   end
 
-  def relocating_shards(source_node \\ nil, dest_node \\ nil, count \\ 1) do
+  def relocating_shards(source_node \\ nil, dest_node \\ nil, count \\ 1, select_max \\ true) do
     state = get_state()
     unless state.relocating do
       set_state(%{
@@ -185,12 +185,13 @@ defmodule Citus.Worker do
         min_diff: 0,
         success_groups: (if state.group_count_down == 0, do: [], else: state.success_groups),
         group_count_down: count,
+        select_max: select_max,
         current: 0,
         total: 0,
         shard_group: []
       })
 
-      shard_group = get_shard_group(source_node, dest_node)
+      shard_group = get_shard_group(source_node, dest_node, select_max)
       total = length(List.last(shard_group))
 
       set_state(%{
@@ -272,7 +273,7 @@ defmodule Citus.Worker do
       })
 
       if continue && group_count_down != 0,
-        do: relocating_shards(source_node, dest_node, group_count_down)
+        do: relocating_shards(source_node, dest_node, group_count_down, state.select_max)
     end
   end
 
