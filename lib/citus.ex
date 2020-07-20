@@ -10,4 +10,11 @@ defmodule Citus do
       DynamicSupervisor.start_child(__MODULE__, {Citus.Worker, []})
     end
   end
+
+  def relocate do
+    Logger.configure(level: :warn)
+    start_link()
+    connect()
+    Citus.Worker.relocating_shards()
+  end
 end

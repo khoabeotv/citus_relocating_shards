@@ -182,7 +182,7 @@ defmodule Citus.Worker do
         error: nil,
         rollback: false,
         relocating: true,
-        min_diff: 0,
+        min_diff: 20000,
         success_groups: (if state.group_count_down == 0, do: [], else: state.success_groups),
         group_count_down: count,
         select_max: select_max,
